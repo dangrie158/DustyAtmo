@@ -1,0 +1,77 @@
+#!/usr/bin/env python
+import argparse
+import pathlib
+import typing
+
+from PIL import Image
+
+c_file_template = """// created using create_565_array.
+// http://github.com/dangrie158
+
+#include <Arduino.h>
+
+const uint16_t {img_name}[{img_len}] = {{
+{img_data}
+}};
+"""
+
+h_template = "extern const uint16_t {img_name}[{img_len}] PROGMEM;"
+
+
+def grouper(iterable, n):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
+    # from https://docs.python.org/3/library/itertools.html
+    args = [iter(iterable)] * n
+    return zip(*args)
+
+
+def convert_888_to_565(pixel):
+    r, g, b = pixel
+    msb_byte = int(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3))
+    return (msb_byte >> 8) | ((msb_byte << 8) & 0xFF00)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Convert an inputnimage to a 565RGB header a c source file"
+    )
+    parser.add_argument(
+        "--output_dir", "-o", type=pathlib.Path, help="output directory of the c file",
+    )
+    parser.add_argument(
+        "input", type=argparse.FileType("rb"), help="input file name",
+    )
+
+    return parser.parse_args()
+
+
+def convert_image(input: typing.IO, output_dir: pathlib.Path):
+    output_lines = []
+    image = Image.open(input).convert("RGB")
+    converted_image = map(convert_888_to_565, image.getdata())
+    output_name = pathlib.Path(input.name).stem
+
+    if not output_dir.is_dir():
+        raise AssertionError("output path is not a directory")
+
+    for pixel_group in grouper(converted_image, 8):
+        line = "\t" + ", ".join([f"0x{pixel:04X}" for pixel in pixel_group])
+        output_lines.append(line)
+
+    output_data = ",\n".join(output_lines)
+
+    data_length = image.height * image.width
+    with open(output_dir.joinpath(output_name + ".c"), "w") as c_file:
+        c_file.write(
+            c_file_template.format(
+                img_name=output_name, img_len=data_length, img_data=output_data
+            )
+        )
+
+    print(h_template.format(img_name=output_name, img_len=data_length))
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    convert_image(**vars(args))
